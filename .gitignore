@@ -1,3 +1,4 @@
 /server.py
 /serviceAccountKey.json
 /venv
+/.gitignore
