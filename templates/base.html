@@ -49,7 +49,7 @@
                     {% if current_user.is_authenticated %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
-                            <img src="{{ current_user.profile_pic }}" 
+                            <img src="{{ url_for('static', filename='uploads/profiles/' + current_user.profile_pic) }}" 
                                  alt="Profile" class="nav-profile-pic">
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end">
