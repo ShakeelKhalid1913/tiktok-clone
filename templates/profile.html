@@ -6,7 +6,7 @@
         <div class="profile-cover"></div>
         <div class="profile-info">
             <div class="profile-avatar">
-                <img src="{{ url_for('static', filename='uploads/profiles/' + user.profile_pic) }}" alt="Profile Picture">
+                <img src="{{ user.profile_pic }}" alt="Profile Picture">
             </div>
             <div class="profile-details">
                 <h2>{{ user.username }}</h2>
@@ -34,7 +34,7 @@
             <div class="video-item">
                 <a href="#" class="video-preview" data-video-id="{{ video.id }}">
                     <video>
-                        <source src="{{ url_for('static', filename='uploads/' + video.filename) }}" type="video/mp4">
+                        <source src="{{ video.filename }}" type="video/mp4">
                     </video>
                     <div class="video-stats">
                         <span><i class="fas fa-heart"></i> {{ video.likes|length }}</span>

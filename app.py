@@ -1,78 +1,59 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+import os
+from datetime import datetime
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, abort
+from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from datetime import datetime
-import os
+import uuid
+
+# Import Firebase initialization
+from firebase_init import db, bucket
+
+# Import models
+from models import User, Video, Comment, Like
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///tiktok.db'
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # Increased to 100MB max file size
 
-# Initialize extensions
-db = SQLAlchemy(app)
-login_manager = LoginManager(app)
+DEFAULT_PROFILE_PIC = 'default.jpg'
+
+login_manager = LoginManager()
+login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# Delete database file if it exists
-with app.app_context():
-    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tiktok.db')
-    if os.path.exists(db_path):
-        os.remove(db_path)
-
-# Models
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(120), nullable=False)
-    profile_pic = db.Column(db.String(120), default='default.png')
-    bio = db.Column(db.String(200))
-    videos = db.relationship('Video', backref='author', lazy=True)
-    comments = db.relationship('Comment', backref='user', lazy=True)
-    likes = db.relationship('Like', backref='user', lazy=True)
-
-class Video(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    filename = db.Column(db.String(100), nullable=False)
-    caption = db.Column(db.String(500))
-    hashtags = db.Column(db.String(500))  # Store hashtags as comma-separated string
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    comments = db.relationship('Comment', backref='video', lazy=True)
-    likes = db.relationship('Like', backref='video', lazy=True)
-    views = db.Column(db.Integer, default=0)
-
-class Comment(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(db.String(500), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    video_id = db.Column(db.Integer, db.ForeignKey('video.id'), nullable=False)
-
-class Like(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    video_id = db.Column(db.Integer, db.ForeignKey('video.id'), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+def upload_file_to_firebase(file, folder):
+    """Upload a file to Firebase Storage and return its public URL"""
+    if not file:
+        return None
+    
+    # Create a unique filename
+    file_extension = os.path.splitext(file.filename)[1]
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    
+    # Create the full path in Firebase Storage
+    blob = bucket.blob(f"{folder}/{unique_filename}")
+    
+    # Upload the file
+    blob.upload_from_string(
+        file.read(),
+        content_type=file.content_type
+    )
+    
+    # Make the file publicly accessible
+    blob.make_public()
+    
+    return blob.public_url
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return User.get_by_id(user_id)
 
-# Create all tables
-with app.app_context():
-    db.create_all()
-
-# Routes
 @app.route('/')
 def index():
     page = request.args.get('page', 1, type=int)
     per_page = 5
-    videos = Video.query.order_by(Video.timestamp.desc()).paginate(page=page, per_page=per_page)
+    videos = Video.get_trending_videos(limit=per_page * page)
     return render_template('index.html', videos=videos)
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -80,7 +61,7 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
-        user = User.query.filter_by(username=username).first()
+        user = User.get_by_username(username)
         
         if user and check_password_hash(user.password_hash, password):
             login_user(user)
@@ -95,25 +76,30 @@ def signup():
         username = request.form.get('username')
         email = request.form.get('email')
         password = request.form.get('password')
-        bio = request.form.get('bio')
+        bio = request.form.get('bio', '')
         
-        if User.query.filter_by(username=username).first():
+        if User.get_by_username(username):
             flash('Username already exists')
             return redirect(url_for('signup'))
             
-        if User.query.filter_by(email=email).first():
+        if User.get_by_email(email):
             flash('Email already registered')
             return redirect(url_for('signup'))
             
-        user = User(
-            username=username,
-            email=email,
-            password_hash=generate_password_hash(password),
-            bio=bio
-        )
-        db.session.add(user)
-        db.session.commit()
+        user_data = {
+            'username': username,
+            'email': email,
+            'password_hash': generate_password_hash(password),
+            'bio': bio,
+            'profile_pic': DEFAULT_PROFILE_PIC  # Use the default profile picture URL
+        }
         
+        # Create new user document
+        user_ref = db.collection('users').document()
+        user_ref.set(user_data)
+        
+        # Get the user object
+        user = User.get_by_id(user_ref.id)
         login_user(user)
         return redirect(url_for('index'))
         
@@ -135,50 +121,72 @@ def upload():
         
         video = request.files['video']
         caption = request.form.get('caption', '')
-        hashtags = request.form.get('hashtags', '')  # Get hashtags from form
+        hashtags = request.form.get('hashtags', '')
         
         if video.filename == '':
             flash('No selected file')
             return redirect(request.url)
         
         if video:
-            filename = secure_filename(video.filename)
-            video.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            # Upload video to Firebase Storage
+            video_url = upload_file_to_firebase(video, 'videos')
             
-            new_video = Video(
-                filename=filename,
-                caption=caption,
-                hashtags=hashtags,  # Save hashtags
-                user_id=current_user.id
-            )
-            db.session.add(new_video)
-            db.session.commit()
+            if video_url:
+                # Save video data to Firestore
+                video_data = {
+                    'filename': video_url,
+                    'caption': caption,
+                    'hashtags': hashtags.split(),  # Store hashtags as array
+                    'timestamp': datetime.now(),
+                    'user_id': current_user.id,
+                    'views': 0
+                }
+                db.collection('videos').document().set(video_data)
+                return redirect(url_for('index'))
             
-            return redirect(url_for('index'))
+            flash('Error uploading video')
+            return redirect(request.url)
     
     return render_template('upload.html')
 
 @app.route('/profile/<username>')
 def profile(username):
-    user = User.query.filter_by(username=username).first_or_404()
-    videos = Video.query.filter_by(user_id=user.id).order_by(Video.timestamp.desc()).all()
+    user = User.get_by_username(username)
+    if not user:
+        return abort(404)
+    videos = user.get_videos()
     return render_template('profile.html', user=user, videos=videos)
 
 @app.route('/edit_profile', methods=['GET', 'POST'])
 @login_required
 def edit_profile():
     if request.method == 'POST':
-        if 'profile_pic' in request.files:
-            file = request.files['profile_pic']
-            if file.filename != '':
-                filename = secure_filename(file.filename)
-                file.save(os.path.join('static/uploads/profiles', filename))
-                current_user.profile_pic = filename
+        file = request.files.get('profile_pic')
+        if file and file.filename != '':
+            # if profile pic already exists, delete it
+            if current_user.profile_pic != DEFAULT_PROFILE_PIC:
+                profile_pic_url = current_user.profile_pic
+                bucket.blob(profile_pic_url).delete()
+            
+            # Upload profile picture to Firebase Storage
+            profile_pic_url = upload_file_to_firebase(file, 'profiles')
+            
+            if profile_pic_url:
+                # Update user profile in Firestore
+                user_doc = db.collection('users').document(current_user.id)
+                user_doc.update({
+                    'profile_pic': profile_pic_url  # Store the full URL
+                })
+                current_user.profile_pic = profile_pic_url  # Update current user object
         
-        current_user.bio = request.form.get('bio')
-        db.session.commit()
+        bio = request.form.get('bio')
+        if bio is not None:
+            user_doc = db.collection('users').document(current_user.id)
+            user_doc.update({'bio': bio})
+            current_user.bio = bio  # Update current user object
+        
         return redirect(url_for('profile', username=current_user.username))
-        
+    
     return render_template('edit_profile.html')
 
 @app.route('/search')
@@ -190,77 +198,66 @@ def search():
         return render_template('search.html', users=[], videos=[], query=query, search_type=search_type)
     
     if search_type == 'users':
-        users = User.query.filter(User.username.ilike(f'%{query}%')).all()
+        users = [User.get_by_username(query)]
         return render_template('search.html', users=users, videos=[], query=query, search_type=search_type)
     
     elif search_type == 'hashtags':
-        videos = Video.query.filter(Video.hashtags.ilike(f'%{query}%')).order_by(Video.timestamp.desc()).all()
+        videos = Video.search_by_hashtag(query)
         return render_template('search.html', users=[], videos=videos, query=query, search_type=search_type)
     
     else:  # 'all'
-        users = User.query.filter(User.username.ilike(f'%{query}%')).all()
-        videos = Video.query.filter(
-            db.or_(
-                Video.hashtags.ilike(f'%{query}%'),
-                Video.author.has(User.username.ilike(f'%{query}%'))
-            )
-        ).order_by(Video.timestamp.desc()).all()
+        users = [User.get_by_username(query)]
+        videos = Video.search_by_hashtag(query)
         return render_template('search.html', users=users, videos=videos, query=query, search_type=search_type)
 
-@app.route('/like/<int:video_id>', methods=['POST'])
+@app.route('/like/<video_id>', methods=['POST'])
 @login_required
 def like_video(video_id):
-    video = Video.query.get_or_404(video_id)
-    like = Like.query.filter_by(user_id=current_user.id, video_id=video_id).first()
-    
-    if like:
-        db.session.delete(like)
-        db.session.commit()
-        return jsonify({'action': 'unliked', 'likes': len(video.likes)})
+    if Like.check_if_liked(current_user.id, video_id):
+        # Unlike the video
+        likes = db.collection('likes').where('user_id', '==', current_user.id).where('video_id', '==', video_id).stream()
+        for like in likes:
+            like.reference.delete()
+        return jsonify({'action': 'unliked', 'likes': len(Like.get_video_likes(video_id))})
     else:
-        like = Like(user_id=current_user.id, video_id=video_id)
-        db.session.add(like)
-        db.session.commit()
-        return jsonify({'action': 'liked', 'likes': len(video.likes)})
+        # Like the video
+        like_data = {
+            'user_id': current_user.id,
+            'video_id': video_id,
+            'timestamp': datetime.now()
+        }
+        db.collection('likes').document().set(like_data)
+        return jsonify({'action': 'liked', 'likes': len(Like.get_video_likes(video_id))})
 
-@app.route('/add_comment/<int:video_id>', methods=['POST'])
+@app.route('/add_comment/<video_id>', methods=['POST'])
 @login_required
 def add_comment(video_id):
     data = request.get_json()
     content = data.get('content')
     if content:
-        comment = Comment(
-            content=content,
-            user_id=current_user.id,
-            video_id=video_id
-        )
-        db.session.add(comment)
-        db.session.commit()
+        comment_data = {
+            'content': content,
+            'timestamp': datetime.now(),
+            'user_id': current_user.id,
+            'video_id': video_id
+        }
+        comment_ref = db.collection('comments').document()
+        comment_ref.set(comment_data)
         
         return jsonify({
-            'id': comment.id,
-            'content': comment.content,
-            'timestamp': comment.timestamp.isoformat(),
+            'id': comment_ref.id,
+            'content': content,
+            'timestamp': datetime.now().isoformat(),
             'user': {
                 'username': current_user.username,
-                'profile_pic': url_for('static', filename='uploads/profiles/' + current_user.profile_pic)
+                'profile_pic': current_user.profile_pic
             }
         })
-    
     return jsonify({'error': 'No content provided'}), 400
 
-@app.route('/get_more_comments/<int:video_id>')
-def get_more_comments(video_id):
-    # Get the last comment ID from the request
-    last_comment_id = request.args.get('last_id', 0, type=int)
-    
-    # Get the next 10 comments
-    comments = Comment.query.filter(
-        Comment.video_id == video_id,
-        Comment.id > last_comment_id
-    ).order_by(Comment.timestamp.desc()).limit(10).all()
-    
-    # Convert comments to JSON
+@app.route('/get_comments/<video_id>')
+def get_comments(video_id):
+    comments = Comment.get_recent_comments(video_id)
     comments_data = []
     for comment in comments:
         comments_data.append({
@@ -270,6 +267,30 @@ def get_more_comments(video_id):
             'user': {
                 'username': comment.user.username,
                 'profile_pic': comment.user.profile_pic
+            }
+        })
+    return jsonify(comments_data)
+
+@app.route('/get_more_comments/<video_id>')
+def get_more_comments(video_id):
+    # Get the last comment ID from the request
+    last_comment_id = request.args.get('last_id', 0, type=int)
+    
+    # Get the next 10 comments
+    comments = db.collection('comments').where('video_id', '==', video_id).where('id', '>', last_comment_id).order_by('timestamp').limit(10).stream()
+    
+    # Convert comments to JSON
+    comments_data = []
+    for comment in comments:
+        comment_data = comment.to_dict()
+        comment_data['id'] = comment.id
+        comments_data.append({
+            'id': comment_data['id'],
+            'content': comment_data['content'],
+            'timestamp': comment_data['timestamp'].isoformat(),
+            'user': {
+                'username': User.get_by_id(comment_data['user_id']).username,
+                'profile_pic': User.get_by_id(comment_data['user_id']).profile_pic
             }
         })
     

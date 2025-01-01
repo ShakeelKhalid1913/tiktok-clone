@@ -2,12 +2,12 @@
 
 {% block content %}
 <div class="video-feed">
-    {% for video in videos.items %}
+    {% for video in videos %}
     <div class="video-container" data-video-id="{{ video.id }}">
         <div class="video-card">
             <div class="video-header">
                 <div class="user-info">
-                    <img src="{{ url_for('static', filename='uploads/profiles/' + video.author.profile_pic) }}" 
+                    <img src="{{ video.author.profile_pic }}" 
                          alt="Profile" class="profile-pic">
                     <a href="{{ url_for('profile', username=video.author.username) }}" class="username">
                         {{ video.author.username }}
@@ -17,8 +17,8 @@
 
             <div class="video-content-wrapper">
                 <div class="video-wrapper">
-                    <video loop muted playsinview>
-                        <source src="{{ url_for('static', filename='uploads/' + video.filename) }}" type="video/mp4">
+                    <video loop>
+                        <source src="{{ video.filename }}" type="video/mp4">
                     </video>
                     <div class="video-controls">
                         <button class="play-pause-btn">
@@ -52,7 +52,7 @@
                 <p class="caption">{{ video.caption }}</p>
                 {% if video.hashtags %}
                 <div class="hashtags">
-                    {% for hashtag in video.hashtags.split() %}
+                    {% for hashtag in video.hashtags %}
                     <a href="{{ url_for('search', q=hashtag, type='hashtags') }}" class="hashtag">{{ hashtag }}</a>
                     {% endfor %}
                 </div>
@@ -93,13 +93,28 @@
         </div>
     </div>
     {% endfor %}
-
-    {% if videos.has_next %}
-    <div class="load-more" data-page="{{ videos.next_num }}">
-        <div class="spinner-border text-light" role="status">
-            <span class="visually-hidden">Loading...</span>
-        </div>
-    </div>
-    {% endif %}
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const videos = document.querySelectorAll('video');
+    
+    // Intersection Observer for video playback
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.play();
+            } else {
+                entry.target.pause();
+                entry.target.currentTime = 0;
+            }
+        });
+    }, { threshold: 0.5 });
+    
+    // Observe all videos
+    videos.forEach(video => {
+        observer.observe(video);
+    });
+});
+</script>
 {% endblock %}

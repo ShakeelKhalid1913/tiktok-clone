@@ -8,7 +8,7 @@
         </div>
         <form method="post" enctype="multipart/form-data" class="edit-profile-form">
             <div class="current-profile-pic">
-                <img src="{{ url_for('static', filename='uploads/profiles/' + current_user.profile_pic) }}" 
+                <img src="{{ current_user.profile_pic }}" 
                      alt="Current Profile Picture" id="profile-preview">
             </div>
             
